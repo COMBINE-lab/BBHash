@@ -22,6 +22,7 @@
 
 namespace boomphf {
 
+	constexpr int NO_LEVEL{-1};
 	
 	inline u_int64_t printPt( pthread_t pt) {
 	  unsigned char *ptc = (unsigned char*)(void*)(&pt);
@@ -648,14 +649,20 @@ we need this 2-functors scheme because HashFunctors won't work with unordered_ma
 		}
 
 		//clear collisions in interval, only works with start and size multiple of 64
-		void clearCollisions(uint64_t start, size_t size, bitVector * cc)
+		void clearCollisions(uint64_t start, size_t size, bitVector * cc, bitVector * ca)
 		{
 			assert( (start & 63) ==0);
 			assert( (size & 63) ==0);
 			uint64_t ids = (start/64ULL);
 			for(uint64_t ii =0;  ii< (size/64ULL); ii++ )
 			{
+				bool had_collisions = cc->get64(ii) > 0;
 				_bitArray[ids+ii] =  _bitArray[ids+ii] & (~ (cc->get64(ii)) );
+				// if we had a collision in this 64-bit bucket, then 
+				// record it.
+				if (had_collisions) {
+					ca->set(ii);
+				}
 			}
 
 			cc->clear();
@@ -817,27 +824,41 @@ we need this 2-functors scheme because HashFunctors won't work with unordered_ma
 		return (uint64_t)(((__uint128_t)word * (__uint128_t)p) >> 64);
 
 	}
-	
-	class level{
-	public:
-		level(){ }
 
-		~level() {
+	class level {
+	public:
+		level() {}
+
+		~level()
+		{
 		}
 
-		uint64_t get(uint64_t hash_raw)
+		inline uint64_t get(uint64_t hash_raw) const
 		{
-		//	uint64_t hashi =    hash_raw %  hash_domain; //
+			//	uint64_t hashi =    hash_raw %  hash_domain; //
 			//uint64_t hashi = (uint64_t)(  ((__uint128_t) hash_raw * (__uint128_t) hash_domain) >> 64ULL);
-			uint64_t hashi = fastrange64(hash_raw,hash_domain);
+			uint64_t hashi = fastrange64(hash_raw, hash_domain);
 			return bitset.get(hashi);
 		}
-		
+
+		inline uint64_t had_collision(uint64_t hash_raw) const
+		{
+			uint64_t hashi = (fastrange64(hash_raw, hash_domain) >> 6);
+			return col_tracker.get(hashi);
+		}
+
+		inline uint64_t get_bit_col(uint64_t hash_raw, uint64_t &col) const
+		{
+			uint64_t hashi = fastrange64(hash_raw, hash_domain);
+			col = col_tracker.get(hashi >> 6);
+			return bitset.get(hashi);
+		}
+
 		uint64_t idx_begin;
 		uint64_t hash_domain;
-		bitVector  bitset;
+		bitVector bitset;
+		bitVector col_tracker;
 	};
-
 
 ////////////////////////////////////////////////////////////////
 #pragma mark -
@@ -943,7 +964,7 @@ we need this 2-functors scheme because HashFunctors won't work with unordered_ma
 
 				processLevel(input_range,ii);
 
-				_levels[ii].bitset.clearCollisions(0 , _levels[ii].hash_domain , _tempBitset);
+				_levels[ii].bitset.clearCollisions(0 , _levels[ii].hash_domain , _tempBitset, &_levels[ii].col_tracker);
 				
 				offset = _levels[ii].bitset.build_ranks(offset);
 
@@ -995,9 +1016,9 @@ we need this 2-functors scheme because HashFunctors won't work with unordered_ma
 				}
 //				minimal_hp = _final_hash[elem] + _lastbitsetrank;
 //				return minimal_hp;
-			}
-			else
-			{
+			} else if (level == NO_LEVEL) {
+				return ULLONG_MAX;
+			} else {
 				//non_minimal_hp =  level_hash %  _levels[level].hash_domain; // in fact non minimal hp would be  + _levels[level]->idx_begin
 				non_minimal_hp = fastrange64(level_hash,_levels[level].hash_domain);
 			}
@@ -1320,6 +1341,7 @@ we need this 2-functors scheme because HashFunctors won't work with unordered_ma
 		{
 			int level = 0;
 			uint64_t hash_raw=0;
+			uint64_t col_flag=0;
 
 			for (int ii = 0; ii<(_nb_levels-1) &&  ii < maxlevel ; ii++ )
 			{
@@ -1334,14 +1356,21 @@ we need this 2-functors scheme because HashFunctors won't work with unordered_ma
 					hash_raw = _hasher.next(bbhash);
 				}
 
-
-				if( ii >= minlevel && _levels[ii].get(hash_raw) ) //
-				//if(  _levels[ii].get(hash_raw) ) //
-
-				{
-					break;
+				if (ii >= minlevel) { //&& _levels[ii].get(hash_raw) ) //
+					//if(  _levels[ii].get(hash_raw) ) //
+					auto present = _levels[ii].get_bit_col(hash_raw, col_flag);
+					// if the key exists at this level
+					if (present) {
+						break;
+					}  else if (!col_flag) {
+						//printf("exiting at level % d of %d !\n", level, _nb_levels);
+						// otherwise, our lookup returned a 0
+						// if there were no collisions in this bucket, then we are done
+						*res_level = NO_LEVEL; return hash_raw;
+					} 
+					
+					// otherwise continue to the next level
 				}
-
 				level++;
 			}
 
@@ -1370,6 +1399,7 @@ we need this 2-functors scheme because HashFunctors won't work with unordered_ma
 		{
 			////alloc the bitset for this level
 			_levels[i].bitset =  bitVector(_levels[i].hash_domain); ;
+			_levels[i].col_tracker =  bitVector( (_levels[i].hash_domain >> 6) + 1);
 
 			//printf("---process level %i   wr %i fast %i ---\n",i,_writeEachLevel,_fastmode);
 			

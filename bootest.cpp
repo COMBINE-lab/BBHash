@@ -11,6 +11,7 @@
 #include <iostream>
 #include <fstream>
 #include <assert.h>
+#include <random>
 #include <thread>
 #include <math.h>
 
@@ -404,41 +405,91 @@ void bench_mphf_lookup (phf_t * bphf, Range const& input_range){
 
 	vector<u_int64_t> sample;
 	u_int64_t mphf_value;
+	{
+		//copy sample in ram
+		for (auto const &key : input_range)
+		{
+			sample.push_back(key);
+		}
 
-	//copy sample in ram
-	for (auto const& key: input_range) {
-		sample.push_back(key);
-	}
+		printf("bench lookups [present] sample size %lu \n", sample.size());
+		//bench procedure taken from emphf
+		stats_accumulator stats;
+		double tick = get_time_usecs();
+		size_t lookups = 0;
+		static const size_t lookups_per_sample = 1 << 16;
+		u_int64_t dumb = 0;
+		double elapsed;
+		size_t runs = 10;
 
-	printf("bench lookups  sample size %lu \n",sample.size());
-	//bench procedure taken from emphf
-	stats_accumulator stats;
-	double tick = get_time_usecs();
-	size_t lookups = 0;
-	static const size_t lookups_per_sample = 1 << 16;
-	u_int64_t dumb=0;
-	double elapsed;
-	size_t runs = 10;
+		for (size_t run = 0; run < runs; ++run)
+		{
+			for (size_t ii = 0; ii < sample.size(); ++ii)
+			{
 
-	for (size_t run = 0; run < runs; ++run) {
-		for (size_t ii = 0; ii < sample.size(); ++ii) {
+				mphf_value = bphf->lookup(sample[ii]);
+				//do some silly work
+				dumb += mphf_value;
 
-			mphf_value = bphf->lookup(sample[ii]);
-			//do some silly work
-			dumb+= mphf_value;
-
-			if (++lookups == lookups_per_sample) {
-				elapsed = get_time_usecs() - tick;
-				stats.add(elapsed / (double)lookups);
-				tick = get_time_usecs();
-				lookups = 0;
+				if (++lookups == lookups_per_sample)
+				{
+					elapsed = get_time_usecs() - tick;
+					stats.add(elapsed / (double)lookups);
+					tick = get_time_usecs();
+					lookups = 0;
+				}
 			}
 		}
+		printf("BBhash bench lookups average %.2f ns +- stddev  %.2f %%   (fingerprint %llu)  \n", 1000.0 * stats.mean(), stats.relative_stddev(), dumb);
 	}
-	printf("BBhash bench lookups average %.2f ns +- stddev  %.2f %%   (fingerprint %llu)  \n", 1000.0*stats.mean(),stats.relative_stddev(),dumb);
 
+	std::random_device rd;
+	std::mt19937 gen(rd());
+	std::uniform_int_distribution<unsigned long long> dis(
+		std::numeric_limits<std::uint64_t>::min(),
+		std::numeric_limits<std::uint64_t>::max());
+	uint64_t range_size = sample.size();
+	sample.clear();
+	uint64_t detected_present{0};
+	{
+		//copy sample in ram
+		for (size_t i = 0; i < range_size; ++i) {
+			sample.push_back(dis(gen));
+		}
+
+		printf("bench lookups [random] sample size %lu \n", sample.size());
+		//bench procedure taken from emphf
+		stats_accumulator stats;
+		double tick = get_time_usecs();
+		size_t lookups = 0;
+		static const size_t lookups_per_sample = 1 << 16;
+		u_int64_t dumb = 0;
+		double elapsed;
+		size_t runs = 10;
+
+		for (size_t run = 0; run < runs; ++run)
+		{
+			for (size_t ii = 0; ii < sample.size(); ++ii)
+			{
+
+				mphf_value = bphf->lookup(sample[ii]);
+				//do some silly work
+				detected_present += (mphf_value < range_size);
+				dumb += mphf_value;
+
+				if (++lookups == lookups_per_sample)
+				{
+					elapsed = get_time_usecs() - tick;
+					stats.add(elapsed / (double)lookups);
+					tick = get_time_usecs();
+					lookups = 0;
+				}
+			}
+		}
+		printf("BBhash bench lookups average %.2f ns +- stddev  %.2f %%   (fingerprint %llu)  \n", 1000.0 * stats.mean(), stats.relative_stddev(), dumb);
+		printf("%llu keys not identified as alien\n", detected_present);
+	}
 }
-
 
 //#include "bucketing.h"
 
@@ -704,45 +755,96 @@ int main (int argc, char* argv[]){
 		{
 
 			auto input_range = file_binary("benchfile");
-
 			vector<u_int64_t> sample;
 			u_int64_t mphf_value;
-			
-			//copy sample in ram
-			for (auto const& key: input_range) {
-				sample.push_back(key);
-			}
-			
-			printf("bench lookups  sample size %lu \n",sample.size());
-			//bench procedure taken from emphf
-			stats_accumulator stats;
-			double tick = get_time_usecs();
-			size_t lookups = 0;
-			static const size_t lookups_per_sample = 1 << 16;
-			u_int64_t dumb=0;
-			double elapsed;
-			size_t runs = 10;
-			
-			for (size_t run = 0; run < runs; ++run) {
-				for (size_t ii = 0; ii < sample.size(); ++ii) {
-					
-					uint64_t hash=korenXor(sample[ii])%(nBuckets*nMphfByBucket);
-					mphf_value = MPHFs[hash].lookup(sample[ii]) +  nb_elem_in_previous_buckets [hash];
-					dumb+= mphf_value;
-					
-					//do some silly work
-					
-					if (++lookups == lookups_per_sample) {
-						elapsed = get_time_usecs() - tick;
-						stats.add(elapsed / (double)lookups);
-						tick = get_time_usecs();
-						lookups = 0;
+
+			{
+				//copy sample in ram
+				for (auto const &key : input_range)
+				{
+					sample.push_back(key);
+				}
+
+				printf("bench lookups on existing sample size %lu \n", sample.size());
+				//bench procedure taken from emphf
+				stats_accumulator stats;
+				double tick = get_time_usecs();
+				size_t lookups = 0;
+				static const size_t lookups_per_sample = 1 << 16;
+				u_int64_t dumb = 0;
+				double elapsed;
+				size_t runs = 10;
+
+				for (size_t run = 0; run < runs; ++run)
+				{
+					for (size_t ii = 0; ii < sample.size(); ++ii)
+					{
+
+						uint64_t hash = korenXor(sample[ii]) % (nBuckets * nMphfByBucket);
+						mphf_value = MPHFs[hash].lookup(sample[ii]) + nb_elem_in_previous_buckets[hash];
+						dumb += mphf_value;
+
+						//do some silly work
+
+						if (++lookups == lookups_per_sample)
+						{
+							elapsed = get_time_usecs() - tick;
+							stats.add(elapsed / (double)lookups);
+							tick = get_time_usecs();
+							lookups = 0;
+						}
 					}
 				}
+				printf("BBhash buckets bench lookups average %.2f ns +- stddev  %.2f %%   (fingerprint %llu)  \n", 1000.0 * stats.mean(), stats.relative_stddev(), dumb);
 			}
-			printf("BBhash buckets bench lookups average %.2f ns +- stddev  %.2f %%   (fingerprint %llu)  \n", 1000.0*stats.mean(),stats.relative_stddev(),dumb);
-			
+
 			///
+			std::random_device rd;
+		    std::mt19937 gen(rd());
+  		    std::uniform_int_distribution<unsigned long long> dis(
+		        std::numeric_limits<std::uint64_t>::min(),
+		        std::numeric_limits<std::uint64_t>::max()
+		    );
+			sample.clear();
+			{
+				//copy sample in ram
+				for (size_t i = 0; i < input_range.size(); ++i)
+				{
+					sample.push_back(dis(gen));
+				}
+
+				printf("bench lookups on random sample size %lu \n", sample.size());
+				//bench procedure taken from emphf
+				stats_accumulator stats;
+				double tick = get_time_usecs();
+				size_t lookups = 0;
+				static const size_t lookups_per_sample = 1 << 16;
+				u_int64_t dumb = 0;
+				double elapsed;
+				size_t runs = 10;
+
+				for (size_t run = 0; run < runs; ++run)
+				{
+					for (size_t ii = 0; ii < sample.size(); ++ii)
+					{
+
+						uint64_t hash = korenXor(sample[ii]) % (nBuckets * nMphfByBucket);
+						mphf_value = MPHFs[hash].lookup(sample[ii]) + nb_elem_in_previous_buckets[hash];
+						dumb += mphf_value;
+
+						//do some silly work
+
+						if (++lookups == lookups_per_sample)
+						{
+							elapsed = get_time_usecs() - tick;
+							stats.add(elapsed / (double)lookups);
+							tick = get_time_usecs();
+							lookups = 0;
+						}
+					}
+				}
+				printf("BBhash buckets bench lookups average %.2f ns +- stddev  %.2f %%   (fingerprint %llu)  \n", 1000.0 * stats.mean(), stats.relative_stddev(), dumb);
+			}
 		}
 
 

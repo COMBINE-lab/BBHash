@@ -1,6 +1,6 @@
 # CC=/usr/bin/g++
 CXX ?= g++
-CFLAGS = -O3 -std=c++11 -lpthread -Wno-unused-result -Wno-format
+CFLAGS = -O3 -std=c++14 -lpthread -Wno-unused-result -Wno-format
 EXEC=Bootest example example_custom_hash
 all: $(EXEC)
 
@@ -22,14 +22,14 @@ test:
 	./Bootest 10000 1 2 -check
 all: $(EXEC)
 
-example: example.cpp
+example: example.cpp 
 	$(CXX) -o $@  $^ $(CFLAGS)
 
-example_custom_hash: example_custom_hash.cpp
+example_custom_hash: example_custom_hash.cpp 
 	$(CXX) -o $@  $^ $(CFLAGS)
 
 
-Bootest:  bootest.cpp
+Bootest:  bootest.cpp 
 	$(CXX) -o $@  $^ $(CFLAGS)
 
 %.o: %.cpp %.h
